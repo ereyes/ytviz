@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta property="og:image" content="ytviz_poster.jpg" />
+  <meta property="og:image:width" content="1000"/>
+  <meta property="og:image:height" content="650"/>
+  <title>Visualisation des vidéos les plus regardées sur YouTube</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+  <link rel="icon" href="ytviz_favicon.jpg">
+  <style>
+    .barlow-condensed-thin {
+        font-family: "Barlow Condensed", sans-serif;
+        font-weight: 100;
+        font-style: normal;
+    }
+    body {
+      background-color: #eee;
+      font-family: sans-serif;
+      margin: 0;
+      padding:0;
+      box-sizing: border-box;
+    }
+    h1 {
+        text-align: center;
+    }
+    canvas {
+      border: 1px solid gray;
+      display: block;
+      margin: 0 auto 10px;
+    }
+    /* Dropdown styling */
+    #orderSelect {
+      margin-bottom: 10px;
+      font-size: 14px;
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    /* Info box styling */
+    #infoBox {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background-color: #fff;
+      border: 1px solid #333;
+      padding: 10px;
+      max-width: 250px;
+      box-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+      display: none;
+    }
+    #infoBox img {
+      max-width: 100%;
+      display: block;
+      margin-bottom: 5px;
+    }
+    #infoBox a {
+      color: #0066cc;
+      text-decoration: none;
+    }
+    #infoBox a:hover {
+      text-decoration: underline;
+    }
+    /* Close button styling */
+    #closeButton {
+      background: none;
+      border: none;
+      font-size: 16px;
+      float: right;
+      cursor: pointer;
+    }
+    .footer-bg {
+            background-color: #ccc;
+            padding: 20px;
+            text-align: center;
+        }
+  </style>
+</head>
+<body class="barlow-condensed-thin">
+    <h1>Visualisation des vidéos les plus regardées sur YouTube</h1>
+  <!-- Dropdown to select layout mode -->
+  <select id="orderSelect">
+    <option value="default">Nuage de noeuds</option>
+    <option value="darkOuter2d">Noeuds sombres à l'extérieur</option>
+    <option value="timeline">Chronologique</option>
+  </select>
+
+  <canvas id="canvas"></canvas>
+  <div id="infoBox"></div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const infoBox = document.getElementById('infoBox');
+
+    let placedCircles = [];
+    let grid = {};
+    let csvData = [];
+    const gridSize = 500; // used for collision detection
+
+    // We'll store the default (collision-avoidance) positions once computed.
+    let defaultPositions = [];
+    let currentLayout = "default"; // tracks the current layout mode
+
+    // Layout parameters for dark outer layout
+    let centerX, centerY;
+    const innerRadius = 50;   // target for brightest circles (closer to center)
+    const outerRadius = 280;  // target for darkest circles (pushed outward)
+
+    // Compute brightness from a hex color using a luminance formula.
+    function getBrightness(hex) {
+      hex = hex.replace('#', '');
+      if (hex.length === 3) {
+        hex = hex.split('').map(c => c + c).join('');
+      }
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      return 0.299 * r + 0.587 * g + 0.114 * b;
+    }
+
+    // ---------------------------
+    // Responsive Square Canvas Setup
+    // ---------------------------
+    function resizeCanvas() {
+      // Set canvas size to 80% of the smaller dimension of the window
+      const size = Math.min(window.innerWidth, window.innerHeight) * 0.8;
+      canvas.width = size;
+      canvas.height = size;
+      centerX = canvas.width / 2;
+      centerY = canvas.height / 2;
+      
+      // Re-apply the current layout using the new dimensions.
+      if (currentLayout === "default") {
+        drawDefaultLayout();
+        defaultPositions = placedCircles.map(c => ({ x: c.x, y: c.y }));
+      } else if (currentLayout === "darkOuter2d") {
+        const targets = computeDarkOuter2dRandomTargets();
+        animateTransition(targets, 500);
+      } else if (currentLayout === "timeline") {
+        const targets = computeTimelineTargets();
+        animateTransition(targets, 500);
+      }
+    }
+    // Initial setup and resize listener.
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // ---------------------------
+    // CSV Loading and Default Layout
+    // ---------------------------
+    fetch('YT-most_music_videos - 500-thumbs.csv')
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        return response.text();
+      })
+      .then(text => {
+        Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true,
+          complete: function(results) {
+            csvData = results.data;
+            drawDefaultLayout();
+            defaultPositions = placedCircles.map(c => ({ x: c.x, y: c.y }));
+          }
+        });
+      })
+      .catch(error => console.error('Error loading CSV:', error));
+
+    // Default layout (collision-avoidance placement)
+    function drawDefaultLayout() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      placedCircles = [];
+      grid = {};
+      const cx = centerX;
+      const cy = centerY;
+      
+      csvData.forEach(row => {
+        const color = row.hex ? row.hex.trim() : null;
+        const scaledViews = parseFloat(row.scaled_views);
+        const radius = isNaN(scaledViews) ? 5 : scaledViews / 20;
+        if (color && /^#([0-9A-F]{3}){1,2}$/i.test(color)) {
+          let placed = false;
+          if (placedCircles.length === 0) {
+            placeCircle(cx, cy, radius, color, row);
+          } else {
+            let angle = 0;
+            let distance = radius * 2;
+            let attempts = 0;
+            while (!placed && attempts < 100) {
+              attempts++;
+              angle += Math.random() * 2 * Math.PI;
+              distance += radius + Math.random() * 5;
+              const x = cx + Math.cos(angle) * distance;
+              const y = cy + Math.sin(angle) * distance;
+              if (!checkOverlap(x, y, radius)) {
+                placeCircle(x, y, radius, color, row);
+                placed = true;
+              }
+            }
+          }
+        }
+      });
+      currentLayout = "default";
+    }
+
+    // ---------------------------
+    // Dark Outer (2D) Layout: Compute targets using a 2D (random angle) approach.
+    // ---------------------------
+    function computeDarkOuter2dRandomTargets() {
+      const targets = [];
+      if (placedCircles.length === 0) return targets;
+      const brightnesses = placedCircles.map(c => getBrightness(c.color));
+      const minBrightness = Math.min(...brightnesses);
+      const maxBrightness = Math.max(...brightnesses);
+      
+      placedCircles.forEach(circle => {
+        const brightness = getBrightness(circle.color);
+        const normalized = (brightness - minBrightness) / (maxBrightness - minBrightness);
+        const targetR = innerRadius + (1 - normalized) * (outerRadius - innerRadius);
+        const angle = Math.random() * 2 * Math.PI;
+        const targetX = centerX + targetR * Math.cos(angle);
+        const targetY = centerY + targetR * Math.sin(angle);
+        targets.push({ x: targetX, y: targetY });
+      });
+      return targets;
+    }
+
+    // ---------------------------
+    // Timeline Layout: Compute targets using year for x and within each year, order by views (biggest at the top) for y.
+    // ---------------------------
+    function computeTimelineTargets() {
+      const margin = 20; // margin from canvas edges
+      const targetMap = new Map();
+      
+      // Group circles by year.
+      const groups = {};
+      placedCircles.forEach(circle => {
+        const year = circle.data.year;
+        if (!(year in groups)) {
+          groups[year] = [];
+        }
+        groups[year].push(circle);
+      });
+      
+      // Sort years in ascending order (oldest on left).
+      const sortedYears = Object.keys(groups).sort((a, b) => parseInt(a) - parseInt(b));
+      
+      // Compute an x position for each year.
+      const xPositions = {};
+      const nYears = sortedYears.length;
+      sortedYears.forEach((year, i) => {
+        const x = (nYears === 1)
+          ? canvas.width / 2
+          : margin + (i / (nYears - 1)) * (canvas.width - 2 * margin);
+        xPositions[year] = x;
+      });
+      
+      // For each year group, sort circles by views descending (largest first)
+      // and assign y positions evenly from top (margin) to bottom (canvas.height - margin).
+      sortedYears.forEach(year => {
+        const group = groups[year];
+        group.sort((a, b) => parseInt(b.data.views) - parseInt(a.data.views));
+        const L = group.length;
+        group.forEach((circle, j) => {
+          let y;
+          if (L === 1) {
+            y = canvas.height / 2;
+          } else {
+            y = margin + (j / (L - 1)) * (canvas.height - 2 * margin);
+          }
+          targetMap.set(circle, { x: xPositions[year], y: y });
+        });
+      });
+      
+      // Return targets in the same order as placedCircles.
+      return placedCircles.map(circle => targetMap.get(circle));
+    }
+
+    // ---------------------------
+    // Animation Helper: Animate circles from current positions to target positions.
+    // ---------------------------
+    function animateTransition(targetPositions, duration = 1000) {
+      const startTime = performance.now();
+      const initialPositions = placedCircles.map(c => ({ x: c.x, y: c.y }));
+      
+      function animate() {
+        const now = performance.now();
+        const t = Math.min((now - startTime) / duration, 1);
+        placedCircles.forEach((circle, i) => {
+          circle.x = initialPositions[i].x + (targetPositions[i].x - initialPositions[i].x) * t;
+          circle.y = initialPositions[i].y + (targetPositions[i].y - initialPositions[i].y) * t;
+        });
+        drawAllCircles();
+        if (t < 1) {
+          requestAnimationFrame(animate);
+        }
+      }
+      requestAnimationFrame(animate);
+    }
+
+    // ---------------------------
+    // Drawing Helpers
+    // ---------------------------
+    function drawAllCircles() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      placedCircles.forEach(circle => {
+        drawCircle(circle.x, circle.y, circle.color, circle.radius);
+      });
+    }
+
+    function drawCircle(x, y, color, radius) {
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    // ---------------------------
+    // Collision Detection (Grid-Based)
+    // ---------------------------
+    function checkOverlap(x, y, radius) {
+      const cellX = Math.floor(x / gridSize);
+      const cellY = Math.floor(y / gridSize);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const cellKey = `${cellX + dx},${cellY + dy}`;
+          if (grid[cellKey]) {
+            for (const other of grid[cellKey]) {
+              const distance = Math.sqrt((x - other.x) ** 2 + (y - other.y) ** 2);
+              if (distance < radius + other.radius) return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    // ---------------------------
+    // Place a Circle: Draw it, add it to grid, and store its data.
+    // ---------------------------
+    function placeCircle(x, y, radius, color, data) {
+      drawCircle(x, y, color, radius);
+      const cellX = Math.floor(x / gridSize);
+      const cellY = Math.floor(y / gridSize);
+      const cellKey = `${cellX},${cellY}`;
+      if (!grid[cellKey]) grid[cellKey] = [];
+      grid[cellKey].push({ x, y, radius });
+      placedCircles.push({ x, y, radius, color, data: data });
+    }
+
+    // ---------------------------
+    // Info Box Functionality (reverse iteration for proper stacking)
+    // ---------------------------
+    canvas.addEventListener("click", function(event) {
+      const rect = canvas.getBoundingClientRect();
+      const clickX = event.clientX - rect.left;
+      const clickY = event.clientY - rect.top;
+      let circleFound = false;
+      for (let i = placedCircles.length - 1; i >= 0; i--) {
+        const circle = placedCircles[i];
+        const dx = clickX - circle.x;
+        const dy = clickY - circle.y;
+        if (Math.sqrt(dx * dx + dy * dy) <= circle.radius) {
+          showCircleInfo(circle);
+          circleFound = true;
+          break;
+        }
+      }
+      if (!circleFound) {
+        infoBox.style.display = "none";
+      }
+    });
+
+    function showCircleInfo(circle) {
+      let content = "";
+      content += `<button id="closeButton" onclick="document.getElementById('infoBox').style.display='none';"><i class="fa fa-times-circle"></i> fermer</button>`;
+      if (circle.data.img_id) {
+        content += `<img src="imgs_croppped/${circle.data.img_id}.jpg" alt="Thumbnail Preview">`;
+      }
+      if (circle.data.title) {
+        content += `<p><strong>Title:</strong> ${circle.data.title}</p>`;
+      }
+      if (circle.data.author) {
+        content += `<p><strong>Author:</strong> ${circle.data.author}</p>`;
+      }
+      if (circle.data.year) {
+        content += `<p><strong>Year:</strong> ${circle.data.year}</p>`;
+      }
+      if (circle.data.views) {
+        content += `<p><strong>Views:</strong> ${circle.data.views}</p>`;
+      }
+      if (circle.data.yt_url) {
+        content += `<p><a href="${circle.data.yt_url}" target="_blank">Watch on YouTube <i class="fa fa-external-link" aria-hidden="true"></i></a></p>`;
+      }
+      infoBox.innerHTML = content;
+      infoBox.style.display = "block";
+    }
+
+    // ---------------------------
+    // Dropdown Handler: Animate transition between layouts.
+    // ---------------------------
+    document.getElementById("orderSelect").addEventListener("change", function() {
+      const selected = this.value;
+      if (selected === "default" && currentLayout !== "default") {
+        animateTransition(defaultPositions, 1000);
+        currentLayout = "default";
+      } else if (selected === "darkOuter2d" && currentLayout !== "darkOuter2d") {
+        const targets = computeDarkOuter2dRandomTargets();
+        animateTransition(targets, 1000);
+        currentLayout = "darkOuter2d";
+      } else if (selected === "timeline" && currentLayout !== "timeline") {
+        const targets = computeTimelineTargets();
+        animateTransition(targets, 1000);
+        currentLayout = "timeline";
+      }
+    });
+  </script>
+
+<footer class="footer-bg">
+    <p class="responsive-text-credits">This tool is for scientific and educational purposes only. This site does not track your data.</p>
+    <p class="responsive-text-credits"> <strong>Reyes</strong>, Everardo (2024). <em>Drag & Hue (0.1)</em>. Zenodo. <br> <a href="https://doi.org/10.5281/zenodo.13835746">https://doi.org/10.5281/zenodo.13835746</a>
+    <br> <a href="https://doi.org/10.5281/zenodo.13835746" target="_blank"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.13835746.svg" alt="DOI"></a>
+    &nbsp;
+    </p>
+    <p class="responsive-text-credits"><i class="fa fa-github" aria-hidden="true"></i> <a href="https://github.com/ereyes/drag_and_hue">https://github.com/ereyes/drag_and_hue</a></p>
+    <p xmlns:cc="http://creativecommons.org/ns#" xmlns:dct="http://purl.org/dc/terms/"  class="responsive-text-credits"><a property="dct:title" rel="cc:attributionURL" href="https://ereyes.github.io/drag_and_hue/">Drag & Hue</a> by <a rel="cc:attributionURL dct:creator" property="cc:attributionName" href="https://ereyes.net/">Everardo Reyes</a> is licensed under <br> <a href="https://creativecommons.org/licenses/by-sa/4.0/?ref=chooser-v1" target="_blank" rel="license noopener noreferrer" style="display:inline-block;">Creative Commons Attribution-ShareAlike 4.0 International<img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/cc.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/by.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/sa.svg?ref=chooser-v1" alt=""></a></p>
+    <p class="responsive-text-credits"><a href="http://ereyes.net">E. Reyes</a>, Paris, 2024, 2025. </p>
+</footer>
+</body>
+</html>
